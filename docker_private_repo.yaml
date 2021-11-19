@@ -1,0 +1,76 @@
+---
+- name: Docker Private Registry Registartion
+  hosts: docker
+  tasks:
+  - name: Add IP in hosts file
+    lineinfile:
+          dest: /etc/hosts
+          regexp: "^{{ item['ip'] }}.*$"
+          line: "{{ item['ip'] }}\t\t{{ item['names'] | join('') }}"
+          state: present
+    with_items:
+          - ip: 10.32.192.135
+            names: 'docker-repo'
+
+  - name: directory creation
+    shell: mkdir -p /etc/docker/certs.d/docker-repo:5000
+    register: created
+
+  - name: copy ca certificate
+    copy: 
+       src: /etc/ansible/ca.crt 
+       dest: /etc/docker/certs.d/docker-repo:5000
+    when: created.changed
+
+  - name: Package need to copy and install via yum its one time activity
+    copy: 
+       src: '{{ item }}'
+       dest: '/opt'
+       owner: root
+       group: root
+       mode: 0644
+    loop:
+       - python-docker-py-1.10.6-9.el7_6.noarch.rpm
+       - python-websocket-client-0.56.0-3.git3c25814.el7.noarch.rpm
+       - python-docker-pycreds-0.3.0-9.el7_6.noarch.rpm
+
+  - name: actual installation via yum     
+    yum:
+      name: 
+          - /opt/python-docker-py-1.10.6-9.el7_6.noarch.rpm
+          - /opt/python-websocket-client-0.56.0-3.git3c25814.el7.noarch.rpm
+          - /opt/python-docker-pycreds-0.3.0-9.el7_6.noarch.rpm
+      state: present
+      update_cache: true
+ 
+  - name: Replace before the expression till the begin of the file (requires Ansible >= 2.4)
+    replace:
+       path: /lib/systemd/system/docker.service
+       regexp: "^ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock"
+       replace: '#ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'    
+    register: step1
+
+  - name: Addition of new line
+    lineinfile:
+          path: /lib/systemd/system/docker.service
+          line: "ExecStart=/usr/bin/dockerd  -H tcp://0.0.0.0:2375 -H   unix:///var/run/docker.sock  --insecure-registry docker-repo:5000"
+          insertbefore: 'ExecReload='
+    when: step1.changed
+    ignore_errors: yes
+    register: step2
+
+  - name: Testing
+    debug: 
+      var: step2 
+
+  - name: Restart service
+    shell: systemctl daemon-reload      && sleep 1 && systemctl restart docker.service
+    when: step2.changed
+
+  - name: Log into private registry and force re-authorization
+    docker_login:
+        registry: docker-repo:5000
+        username: testuser
+        password: testpasswd
+        reauthorize: yes
+
